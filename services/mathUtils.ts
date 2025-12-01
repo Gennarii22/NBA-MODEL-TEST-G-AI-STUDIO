@@ -37,3 +37,14 @@ export const calculateStdDev = (values: number[], mean?: number): number => {
 };
 
 export const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
+
+/**
+ * Calculates the Defensive Rating (efficiency ratio).
+ * Rating = TeamStatsAllowed / LeagueAverage
+ * > 1.0 = Team allows MORE than average (Bad Defense / Good for Opponent)
+ * < 1.0 = Team allows LESS than average (Good Defense / Bad for Opponent)
+ */
+export const calculateDefensiveRating = (teamAllowed: number, leagueAvg: number): number => {
+  if (leagueAvg === 0) return 1.0;
+  return teamAllowed / leagueAvg;
+};

@@ -20,15 +20,8 @@ export interface Team {
   id: string;
   name: string;
   abbreviation: string;
-  // Rating > 1.0 means bad defense (good for opponent), < 1.0 means elite defense
-  defensiveRating: {
-    overall: number;
-    vsPG: number;
-    vsSG: number;
-    vsSF: number;
-    vsPF: number;
-    vsC: number;
-  };
+  // Raw stats allowed per game
+  statsAllowed: Record<StatCategory, number>;
 }
 
 export interface GameLog {

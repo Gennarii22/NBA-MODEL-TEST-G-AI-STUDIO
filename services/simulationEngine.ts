@@ -1,5 +1,5 @@
-import { GameLog, PerMinuteProfile, Player, SimulationResult, Team } from '../types';
-import { calculateMedian, calculateStdDev, generateGaussian, clamp } from './mathUtils';
+import { GameLog, PerMinuteProfile, Player, SimulationResult, Team, StatCategory } from '../types';
+import { calculateMedian, calculateStdDev, generateGaussian, clamp, calculateDefensiveRating } from './mathUtils';
 
 const SIMULATION_COUNT = 1000;
 
@@ -8,14 +8,31 @@ const SIMULATION_COUNT = 1000;
  * Convert absolute game stats to per-minute metrics and extract median/stdDev.
  */
 export const createPlayerProfile = (logs: GameLog[]): PerMinuteProfile => {
-  const minutes = logs.map(l => l.minutes);
-  const ptsPerMin = logs.map(l => l.minutes > 0 ? l.pts / l.minutes : 0);
-  const rebPerMin = logs.map(l => l.minutes > 0 ? l.reb / l.minutes : 0);
-  const astPerMin = logs.map(l => l.minutes > 0 ? l.ast / l.minutes : 0);
-  const stlPerMin = logs.map(l => l.minutes > 0 ? l.stl / l.minutes : 0);
-  const blkPerMin = logs.map(l => l.minutes > 0 ? l.blk / l.minutes : 0);
-  const tovPerMin = logs.map(l => l.minutes > 0 ? l.tov / l.minutes : 0);
-  const fg3mPerMin = logs.map(l => l.minutes > 0 ? l.fg3m / l.minutes : 0);
+  // Filter out games with 0 minutes or invalid data to avoid Infinity/NaN
+  const validLogs = logs.filter(l => l.minutes > 0);
+
+  if (validLogs.length === 0) {
+    // Fallback profile if no valid logs exist
+    return {
+      minutes: { median: 0, stdDev: 0 },
+      ptsPerMin: { median: 0, stdDev: 0 },
+      rebPerMin: { median: 0, stdDev: 0 },
+      astPerMin: { median: 0, stdDev: 0 },
+      stlPerMin: { median: 0, stdDev: 0 },
+      blkPerMin: { median: 0, stdDev: 0 },
+      tovPerMin: { median: 0, stdDev: 0 },
+      fg3mPerMin: { median: 0, stdDev: 0 },
+    };
+  }
+
+  const minutes = validLogs.map(l => l.minutes);
+  const ptsPerMin = validLogs.map(l => l.pts / l.minutes);
+  const rebPerMin = validLogs.map(l => l.reb / l.minutes);
+  const astPerMin = validLogs.map(l => l.ast / l.minutes);
+  const stlPerMin = validLogs.map(l => l.stl / l.minutes);
+  const blkPerMin = validLogs.map(l => l.blk / l.minutes);
+  const tovPerMin = validLogs.map(l => l.tov / l.minutes);
+  const fg3mPerMin = validLogs.map(l => l.fg3m / l.minutes);
 
   return {
     minutes: { median: calculateMedian(minutes), stdDev: calculateStdDev(minutes) },
@@ -32,25 +49,32 @@ export const createPlayerProfile = (logs: GameLog[]): PerMinuteProfile => {
 /**
  * Phase 4 & 5: Monte Carlo Engine & Contextualization
  */
-export const runSimulation = (player: Player, profile: PerMinuteProfile, opponent: Team): SimulationResult[] => {
+export const runSimulation = (
+  player: Player, 
+  profile: PerMinuteProfile, 
+  opponent: Team,
+  leagueAverages: Record<StatCategory, number>
+): SimulationResult[] => {
   const results: SimulationResult[] = [];
 
-  // Determine opponent defensive modifier based on player position
-  // > 1.0 means the opponent is bad at defending this position (boost stats)
-  // < 1.0 means the opponent is good (reduce stats)
-  let defModifier = 1.0;
-  switch (player.position) {
-    case 'PG': defModifier = opponent.defensiveRating.vsPG; break;
-    case 'SG': defModifier = opponent.defensiveRating.vsSG; break;
-    case 'SF': defModifier = opponent.defensiveRating.vsSF; break;
-    case 'PF': defModifier = opponent.defensiveRating.vsPF; break;
-    case 'C': defModifier = opponent.defensiveRating.vsC; break;
-    default: defModifier = opponent.defensiveRating.overall;
+  // Phase 1: Contextual Analysis - Calculate dynamic modifiers per category
+  // Safety check: ensure opponent stats exist, otherwise default to 1.0 (average)
+  const getMod = (val: number | undefined, league: number) => {
+    return val !== undefined ? calculateDefensiveRating(val, league) : 1.0;
   }
+
+  const modifiers = {
+    [StatCategory.PTS]: getMod(opponent.statsAllowed.PTS, leagueAverages.PTS),
+    [StatCategory.REB]: getMod(opponent.statsAllowed.REB, leagueAverages.REB),
+    [StatCategory.AST]: getMod(opponent.statsAllowed.AST, leagueAverages.AST),
+    [StatCategory.STL]: getMod(opponent.statsAllowed.STL, leagueAverages.STL),
+    [StatCategory.BLK]: getMod(opponent.statsAllowed.BLK, leagueAverages.BLK),
+    [StatCategory.TOV]: getMod(opponent.statsAllowed.TOV, leagueAverages.TOV),
+    [StatCategory.FG3M]: getMod(opponent.statsAllowed.FG3M, leagueAverages.FG3M),
+  };
 
   for (let i = 0; i < SIMULATION_COUNT; i++) {
     // 1. Simulate Minutes (cannot be negative, cap at 48)
-    // Using simple Gaussian. In reality, minutes might be bimodal, but PDF asks for Normal.
     const simMinutes = clamp(generateGaussian(profile.minutes.median, profile.minutes.stdDev), 10, 48);
 
     // 2. Simulate Rates
@@ -62,20 +86,17 @@ export const runSimulation = (player: Player, profile: PerMinuteProfile, opponen
     const simTovRate = Math.max(0, generateGaussian(profile.tovPerMin.median, profile.tovPerMin.stdDev));
     const simFg3mRate = Math.max(0, generateGaussian(profile.fg3mPerMin.median, profile.fg3mPerMin.stdDev));
 
-    // 3. Calculate Raw Totals
-    // 4. Apply Opponent Context (Phase 5 formula: SimTotal * DefRating)
-    // Note: PDF implies Rate * Minutes * Rating.
-    
+    // 3. Calculate Final Projections with Contextual Modifiers
     results.push({
       simId: i,
       minutes: simMinutes,
-      pts: simMinutes * simPtsRate * defModifier,
-      reb: simMinutes * simRebRate * defModifier, // Assuming usage/pace scales similarly for non-scoring stats or simplified for this model
-      ast: simMinutes * simAstRate * defModifier,
-      stl: simMinutes * simStlRate * defModifier, // Steals might inversely correlate to opponent ball security, but using generalized DefRating for simplicity
-      blk: simMinutes * simBlkRate * defModifier,
-      tov: simMinutes * simTovRate * (2 - defModifier), // TOV inverse: Good defense (0.9) => More TOV (1.1)
-      fg3m: simMinutes * simFg3mRate * defModifier,
+      pts: simMinutes * simPtsRate * modifiers.PTS,
+      reb: simMinutes * simRebRate * modifiers.REB, 
+      ast: simMinutes * simAstRate * modifiers.AST,
+      stl: simMinutes * simStlRate * modifiers.STL, 
+      blk: simMinutes * simBlkRate * modifiers.BLK,
+      tov: simMinutes * simTovRate * modifiers.TOV, 
+      fg3m: simMinutes * simFg3mRate * modifiers.FG3M,
     });
   }
 
