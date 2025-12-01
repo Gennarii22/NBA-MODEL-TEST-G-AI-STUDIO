@@ -1,0 +1,5 @@
+{
+  "name": "CourtVision NBA Predictor",
+  "description": "A quantitative NBA predictive model v2.0 using Monte Carlo simulations and contextual opponent analysis to generate betting projections.",
+  "requestFramePermissions": []
+}
